@@ -1,46 +1,39 @@
 import easyocr
 import numpy as np
-import cv2
+from PIL import Image
 import re
 
 reader = easyocr.Reader(['en'], gpu=False)
 
+NORMAL_RANGES = {
+    "Hemoglobin": (13, 17),
+    "WBC": (4000, 11000),
+    "Platelets": (150000, 450000),
+    "RBC": (4.5, 5.9),
+    "Glucose": (70, 140)
+}
+
 def extract_text_from_image(uploaded_file):
-    # Convert uploaded file to bytes
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+    image = Image.open(uploaded_file).convert("RGB")
+    image_np = np.array(image)
 
-    # Decode image using OpenCV
-    image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+    results = reader.readtext(image_np, detail=0)
+    text = "\n".join(results)
 
-    # OCR
-    results = reader.readtext(image)
+    extracted = []
 
-    # Combine detected text
-    text = " ".join([res[1] for res in results])
-
-    return text
-
-
-def detect_tests(text):
-    tests = {}
-
-    patterns = {
-        "Hemoglobin": (r"hemoglobin\s*[:\-]?\s*(\d+\.?\d*)", 13, 17),
-        "Glucose": (r"glucose\s*[:\-]?\s*(\d+\.?\d*)", 70, 110),
-        "Cholesterol": (r"cholesterol\s*[:\-]?\s*(\d+\.?\d*)", 125, 200),
-        "Platelets": (r"platelets\s*[:\-]?\s*(\d+\.?\d*)", 150000, 450000),
-    }
-
-    for test, (pattern, low, high) in patterns.items():
-        match = re.search(pattern, text, re.IGNORECASE)
+    for test, (low, high) in NORMAL_RANGES.items():
+        match = re.search(rf"{test}\s*[:\-]?\s*(\d+\.?\d*)", text, re.IGNORECASE)
         if match:
             value = float(match.group(1))
             status = "Normal" if low <= value <= high else "Abnormal"
-            tests[test] = {
-                "value": value,
-                "low": low,
-                "high": high,
-                "status": status
-            }
 
-    return tests
+            extracted.append({
+                "Test": test,
+                "Value": value,
+                "Low": low,
+                "High": high,
+                "Status": status
+            })
+
+    return extracted
