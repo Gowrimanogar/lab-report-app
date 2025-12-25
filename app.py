@@ -6,75 +6,98 @@ from PIL import Image
 import pandas as pd
 import re
 
-st.set_page_config(page_title="CBC Lab Report Analyzer", layout="wide")
+# ---------------- CONFIG ----------------
+st.set_page_config(page_title="CBC Lab Analyzer", layout="wide")
+st.title("🧪 CBC Lab Report Analyzer")
+st.write("Upload a clear CBC report image (PNG / JPG)")
 
-st.title("🧪 Medical Lab Report Analyzer (CBC)")
-st.write("Upload a **clear CBC lab report image (PNG/JPG)**")
+# ---------------- OCR LOADER ----------------
+@st.cache_resource
+def load_ocr():
+    return easyocr.Reader(['en'], gpu=False)
 
+reader = load_ocr()
+
+# ---------------- IMAGE PREPROCESS ----------------
+def preprocess(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.adaptiveThreshold(
+        gray, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        31, 2
+    )
+    return gray
+
+# ---------------- OCR ----------------
+def extract_text(img):
+    result = reader.readtext(img, detail=0, paragraph=False)
+    return result
+
+# ---------------- SMART CBC PARSER ----------------
+def extract_cbc_values(lines):
+    cbc_data = []
+
+    for line in lines:
+        line = line.strip()
+
+        # Pattern: TEST NAME  VALUE  UNIT
+        match = re.search(
+            r"([A-Za-z ()/%\-]+)\s+(\d+\.?\d*)\s*(g/dL|%|fL|pg|/cumm|million|10\^3|10\^6)?",
+            line
+        )
+
+        if match:
+            test = match.group(1).strip()
+            value = match.group(2)
+            unit = match.group(3) if match.group(3) else ""
+
+            # Remove junk lines
+            if len(test) > 3 and not test.lower().startswith("ref"):
+                cbc_data.append([test, value, unit])
+
+    return cbc_data
+
+# ---------------- FILE UPLOAD ----------------
 uploaded_file = st.file_uploader(
-    "Upload Lab Report Image",
+    "Upload CBC Image",
     type=["png", "jpg", "jpeg"]
 )
 
-@st.cache_resource
-def load_reader():
-    return easyocr.Reader(['en'], gpu=False)
-
-reader = load_reader()
-
-def preprocess(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray = cv2.bilateralFilter(gray, 11, 17, 17)
-    return gray
-
-def extract_text(img):
-    results = reader.readtext(img, detail=0, paragraph=True)
-    return "\n".join(results)
-
-def parse_cbc(text):
-    patterns = {
-        "Hemoglobin (g/dL)": r"Haemoglobin|Hemoglobin.*?(\d+\.?\d*)",
-        "Total WBC (/cumm)": r"Total.*?(Leuco|WBC).*?(\d{3,6})",
-        "Platelet Count (/cumm)": r"Platelet.*?(\d{5,7})",
-        "RBC (million/cumm)": r"RBC.*?(\d+\.?\d*)",
-        "MCV (fL)": r"MCV.*?(\d+\.?\d*)",
-        "MCH (pg)": r"MCH.*?(\d+\.?\d*)",
-        "MCHC (g/dL)": r"MCHC.*?(\d+\.?\d*)"
-    }
-
-    extracted = {}
-    for test, pattern in patterns.items():
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            extracted[test] = match.groups()[-1]
-
-    return extracted
-
 if uploaded_file:
     image = Image.open(uploaded_file)
-    st.image(image, caption="Uploaded CBC Report", use_column_width=True)
+    st.image(image, caption="Uploaded Report", use_column_width=True)
 
     img_np = np.array(image)
     processed = preprocess(img_np)
 
     with st.spinner("🔍 Reading report using EasyOCR..."):
-        ocr_text = extract_text(processed)
-        cbc_data = parse_cbc(ocr_text)
+        ocr_lines = extract_text(processed)
+        cbc_rows = extract_cbc_values(ocr_lines)
 
-    st.subheader("🧾 OCR Extracted Text (Debug)")
-    with st.expander("Show OCR text"):
-        st.text(ocr_text)
+    # ---------------- DEBUG ----------------
+    with st.expander("🔎 OCR Raw Text"):
+        for l in ocr_lines:
+            st.write(l)
 
-    if cbc_data:
-        st.success("✅ CBC values detected successfully")
-
+    # ---------------- RESULTS ----------------
+    if cbc_rows:
         df = pd.DataFrame(
-            cbc_data.items(),
-            columns=["Test", "Value"]
+            cbc_rows,
+            columns=["Test Name", "Value", "Unit"]
         )
 
-        st.subheader("📊 Extracted CBC Results")
-        st.table(df)
+        st.success(f"✅ Detected {len(df)} CBC tests")
+        st.dataframe(df, use_container_width=True)
+
+        # ---------------- ANALYTICS ----------------
+        st.subheader("📊 Analytics")
+        numeric_df = df.copy()
+        numeric_df["Value"] = pd.to_numeric(numeric_df["Value"], errors="coerce")
+
+        st.bar_chart(
+            numeric_df.set_index("Test Name")["Value"]
+        )
 
     else:
-        st.error("❌ Unable to detect CBC values. Please upload a clearer image.")
+        st.error("❌ No CBC values detected. Try a clearer image.")
