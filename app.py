@@ -6,14 +6,14 @@ import re
 from PIL import Image
 from io import BytesIO
 
-# ---------------- CONFIG ----------------
+# ================== APP CONFIG ==================
 st.set_page_config(
-    page_title="CBC Lab Report Analyzer",
+    page_title="Medical Lab Report Analyzer",
     page_icon="🧪",
     layout="wide"
 )
 
-# ---------------- STYLES ----------------
+# ================== STYLING ==================
 st.markdown("""
 <style>
 body {
@@ -23,113 +23,112 @@ body {
     padding: 2rem;
 }
 .card {
-    background-color: #111827;
-    padding: 20px;
-    border-radius: 15px;
-    box-shadow: 0 0 20px rgba(0,0,0,0.4);
+    background-color: #0f172a;
+    padding: 25px;
+    border-radius: 16px;
+    box-shadow: 0 0 25px rgba(0,0,0,0.5);
 }
-.green { color:#22c55e; font-weight:bold; }
-.red { color:#ef4444; font-weight:bold; }
+.green { color:#22c55e; font-weight:700; }
+.red { color:#ef4444; font-weight:700; }
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------- OCR ----------------
+# ================== OCR ==================
 @st.cache_resource
-def load_reader():
+def load_ocr():
     return easyocr.Reader(['en'], gpu=False)
 
-reader = load_reader()
+reader = load_ocr()
 
 def ocr_image(image):
-    result = reader.readtext(np.array(image), detail=0)
-    return " ".join(result)
+    results = reader.readtext(np.array(image), detail=0)
+    return " ".join(results)
 
-# ---------------- CBC PATTERNS ----------------
-CBC_RULES = {
+# ================== TEST RULES ==================
+TESTS = {
     "Hemoglobin (g/dL)": (r"(hemoglobin|hb|hgb)\s*[:\-]?\s*(\d+\.?\d*)", 13, 17),
-    "RBC (million/uL)": (r"(rbc)\s*[:\-]?\s*(\d+\.?\d*)", 4.5, 6.0),
-    "WBC (cells/uL)": (r"(wbc|tlc|total leucocyte count)\s*[:\-]?\s*(\d+\.?\d*)", 4000, 11000),
-    "Platelets (cells/uL)": (r"(platelet|plt)\s*[:\-]?\s*(\d+\.?\d*)", 150000, 450000),
+    "RBC (million/uL)": (r"\brbc\b\s*[:\-]?\s*(\d+\.?\d*)", 4.5, 6.0),
+    "WBC (cells/uL)": (r"(wbc|tlc|total leucocyte count)\s*[:\-]?\s*(\d+)", 4000, 11000),
+    "Platelets (cells/uL)": (r"(platelet|plt)\s*[:\-]?\s*(\d+)", 150000, 450000),
     "PCV (%)": (r"(pcv|hct)\s*[:\-]?\s*(\d+\.?\d*)", 40, 54),
-    "MCV (fL)": (r"(mcv)\s*[:\-]?\s*(\d+\.?\d*)", 80, 100),
-    "MCH (pg)": (r"(mch)\s*[:\-]?\s*(\d+\.?\d*)", 27, 33),
-    "MCHC (g/dL)": (r"(mchc)\s*[:\-]?\s*(\d+\.?\d*)", 32, 36),
+    "MCV (fL)": (r"\bmcv\b\s*[:\-]?\s*(\d+\.?\d*)", 80, 100),
+    "MCH (pg)": (r"\bmch\b\s*[:\-]?\s*(\d+\.?\d*)", 27, 33),
+    "MCHC (g/dL)": (r"\bmchc\b\s*[:\-]?\s*(\d+\.?\d*)", 32, 36),
 }
 
-def extract_cbc(text):
+def extract_tests(text):
     rows = []
-    text = text.lower().replace(",", "")
-    for test, (pattern, low, high) in CBC_RULES.items():
-        match = re.search(pattern, text, re.IGNORECASE)
+    clean = text.lower().replace(",", "")
+
+    for test, (pattern, low, high) in TESTS.items():
+        match = re.search(pattern, clean)
         if match:
             value = float(match.group(2))
             status = "Normal" if low <= value <= high else "Abnormal"
             rows.append([test, value, f"{low}-{high}", status])
+
     return pd.DataFrame(rows, columns=["Test", "Value", "Normal Range", "Status"])
 
-# ---------------- HEADER ----------------
+# ================== UI ==================
 st.markdown("""
 <div class="card">
-<h1>🧪 CBC Lab Report Analysis</h1>
-<p>Upload CBC image → Get instant medical insights</p>
+<h1>🧪 Medical Lab Report Analyzer</h1>
+<p>Upload your lab report image → View all detected results instantly</p>
 </div>
 """, unsafe_allow_html=True)
 
-# ---------------- UPLOAD ----------------
-uploaded_file = st.file_uploader(
-    "Upload Medical Report (PNG / JPG)",
+uploaded = st.file_uploader(
+    "Upload Lab Report (PNG / JPG)",
     type=["png","jpg","jpeg"]
 )
 
-if uploaded_file:
-    image = Image.open(uploaded_file)
+if uploaded:
+    image = Image.open(uploaded)
     st.image(image, caption="Uploaded Report", use_column_width=True)
 
-    with st.spinner("🔍 Reading report..."):
+    with st.spinner("🔍 Extracting test results..."):
         text = ocr_image(image)
 
     st.subheader("📄 OCR Extracted Text")
-    st.text_area("", text, height=200)
+    st.text_area("", text, height=220)
 
-    df = extract_cbc(text)
+    df = extract_tests(text)
 
-    if len(df) == 0:
-        st.error("❌ No CBC values detected. Try a clearer image.")
+    if df.empty:
+        st.error("❌ No lab test values detected. Try a clearer image.")
     else:
-        st.subheader("📊 CBC Results")
+        st.subheader("📊 All Detected Test Results")
 
         def color_status(val):
             return "color: green" if val == "Normal" else "color: red"
 
         st.dataframe(df.style.applymap(color_status, subset=["Status"]))
 
-        # ---------------- DOWNLOADS ----------------
-        st.subheader("⬇️ Download Report")
+        st.subheader("⬇️ Download Reports")
 
+        # CSV
         csv = df.to_csv(index=False).encode()
-        st.download_button("📥 Download CSV", csv, "cbc_report.csv", "text/csv")
+        st.download_button("📥 Download CSV", csv, "lab_report.csv", "text/csv")
 
-        # Simple PDF
-        pdf_buffer = BytesIO()
+        # PDF
         from reportlab.platypus import SimpleDocTemplate, Table
         from reportlab.lib.pagesizes import A4
 
+        pdf_buffer = BytesIO()
         doc = SimpleDocTemplate(pdf_buffer, pagesize=A4)
         table_data = [df.columns.tolist()] + df.values.tolist()
-        table = Table(table_data)
-        doc.build([table])
+        doc.build([Table(table_data)])
 
         st.download_button(
             "📄 Download PDF",
             pdf_buffer.getvalue(),
-            "cbc_report.pdf",
+            "lab_report.pdf",
             "application/pdf"
         )
 
-# ---------------- FOOTER ----------------
 st.markdown("""
 <hr>
 <center>
-<small>⚠️ This tool is for educational purposes only. Consult a doctor for medical decisions.</small>
+<small>⚠️ Educational tool only. Please consult a medical professional.</small>
 </center>
 """, unsafe_allow_html=True)
