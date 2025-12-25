@@ -1,137 +1,124 @@
 import streamlit as st
+import easyocr
 import numpy as np
 import pandas as pd
-import easyocr
 import re
 from PIL import Image
-from io import BytesIO
+from fpdf import FPDF
+import io
 
-# ================== APP CONFIG ==================
+# ---------------- CONFIG ----------------
 st.set_page_config(
-    page_title="Medical Lab Report Analyzer",
+    page_title="CBC Lab Report Analyzer",
     page_icon="🧪",
     layout="wide"
 )
 
-# ================== STYLING ==================
 st.markdown("""
 <style>
-body {
-    background: linear-gradient(135deg,#0f2027,#203a43,#2c5364);
-}
-.block-container {
-    padding: 2rem;
-}
-.card {
-    background-color: #0f172a;
-    padding: 25px;
-    border-radius: 16px;
-    box-shadow: 0 0 25px rgba(0,0,0,0.5);
-}
-.green { color:#22c55e; font-weight:700; }
-.red { color:#ef4444; font-weight:700; }
+body {background-color:#0e1117;}
+h1,h2,h3,p {color:white;}
 </style>
 """, unsafe_allow_html=True)
 
-# ================== OCR ==================
+st.title("🧪 CBC Lab Report Analysis")
+st.caption("Upload CBC image → Extract all tests → Highlight abnormal values → Download PDF/CSV")
+
+# ---------------- OCR ----------------
 @st.cache_resource
-def load_ocr():
+def load_reader():
     return easyocr.Reader(['en'], gpu=False)
 
-reader = load_ocr()
+reader = load_reader()
 
 def ocr_image(image):
-    results = reader.readtext(np.array(image), detail=0)
-    return " ".join(results)
+    result = reader.readtext(np.array(image))
+    return " ".join([r[1] for r in result])
 
-# ================== TEST RULES ==================
-TESTS = {
-    "Hemoglobin (g/dL)": (r"(hemoglobin|hb|hgb)\s*[:\-]?\s*(\d+\.?\d*)", 13, 17),
-    "RBC (million/uL)": (r"\brbc\b\s*[:\-]?\s*(\d+\.?\d*)", 4.5, 6.0),
-    "WBC (cells/uL)": (r"(wbc|tlc|total leucocyte count)\s*[:\-]?\s*(\d+)", 4000, 11000),
-    "Platelets (cells/uL)": (r"(platelet|plt)\s*[:\-]?\s*(\d+)", 150000, 450000),
-    "PCV (%)": (r"(pcv|hct)\s*[:\-]?\s*(\d+\.?\d*)", 40, 54),
-    "MCV (fL)": (r"\bmcv\b\s*[:\-]?\s*(\d+\.?\d*)", 80, 100),
-    "MCH (pg)": (r"\bmch\b\s*[:\-]?\s*(\d+\.?\d*)", 27, 33),
-    "MCHC (g/dL)": (r"\bmchc\b\s*[:\-]?\s*(\d+\.?\d*)", 32, 36),
+# ---------------- TEST RANGES ----------------
+NORMAL_RANGES = {
+    "WBC": (4000, 11000),
+    "RBC": (4.5, 5.9),
+    "Hemoglobin": (13.5, 17.5),
+    "Hematocrit": (41, 53),
+    "MCV": (80, 100),
+    "MCH": (27, 32),
+    "MCHC": (32, 36),
+    "Platelets": (150000, 450000)
 }
 
+# ---------------- EXTRACTION ----------------
 def extract_tests(text):
     rows = []
-    clean = text.lower().replace(",", "")
-
-    for test, (pattern, low, high) in TESTS.items():
-        match = re.search(pattern, clean)
+    for test, (low, high) in NORMAL_RANGES.items():
+        pattern = rf"{test}[^0-9]*([0-9]+\.?[0-9]*)"
+        match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            try:
-                value = float(match.groups()[-1])
-                status = "Normal" if low <= value <= high else "Abnormal"
-                rows.append([test, value, f"{low}-{high}", status])
-            except:
-                pass
-
+            value = float(match.group(1))
+            status = "Normal"
+            if value < low:
+                status = "Low"
+            elif value > high:
+                status = "High"
+            rows.append([test, value, f"{low} - {high}", status])
     return pd.DataFrame(rows, columns=["Test", "Value", "Normal Range", "Status"])
 
-# ================== UI ==================
-st.markdown("""
-<div class="card">
-<h1>🧪 Medical Lab Report Analyzer</h1>
-<p>Upload your lab report image → View all detected results instantly</p>
-</div>
-""", unsafe_allow_html=True)
-
-uploaded = st.file_uploader(
-    "Upload Lab Report (PNG / JPG)",
-    type=["png","jpg","jpeg"]
-)
+# ---------------- FILE UPLOAD ----------------
+uploaded = st.file_uploader("Upload CBC Report Image (PNG/JPG)", type=["png","jpg","jpeg"])
 
 if uploaded:
     image = Image.open(uploaded)
-    st.image(image, caption="Uploaded Report", use_column_width=True)
+    st.image(image, caption="Uploaded Report", width=400)
 
-    with st.spinner("🔍 Extracting test results..."):
+    with st.spinner("Reading report..."):
         text = ocr_image(image)
-
-    st.subheader("📄 OCR Extracted Text")
-    st.text_area("", text, height=220)
 
     df = extract_tests(text)
 
     if df.empty:
-        st.error("❌ No lab test values detected. Try a clearer image.")
+        st.error("❌ No CBC values detected. Please upload a clearer image.")
     else:
-        st.subheader("📊 All Detected Test Results")
+        st.subheader("📋 All Detected Test Results")
 
         def color_status(val):
-            return "color: green" if val == "Normal" else "color: red"
+            if val == "High":
+                return "color:red;font-weight:bold;"
+            if val == "Low":
+                return "color:orange;font-weight:bold;"
+            return "color:lightgreen;font-weight:bold;"
 
         st.dataframe(df.style.applymap(color_status, subset=["Status"]))
 
-        st.subheader("⬇️ Download Reports")
+        # ---------------- CSV DOWNLOAD ----------------
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "⬇ Download CSV",
+            csv,
+            "cbc_report.csv",
+            "text/csv"
+        )
 
-        # CSV
-        csv = df.to_csv(index=False).encode()
-        st.download_button("📥 Download CSV", csv, "lab_report.csv", "text/csv")
+        # ---------------- PDF DOWNLOAD ----------------
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+        pdf.cell(200, 10, "CBC Lab Report Analysis", ln=True)
 
-        # PDF
-        from reportlab.platypus import SimpleDocTemplate, Table
-        from reportlab.lib.pagesizes import A4
+        for _, row in df.iterrows():
+            pdf.cell(
+                200, 8,
+                f"{row['Test']}: {row['Value']} ({row['Status']}) | Normal: {row['Normal Range']}",
+                ln=True
+            )
 
-        pdf_buffer = BytesIO()
-        doc = SimpleDocTemplate(pdf_buffer, pagesize=A4)
-        table_data = [df.columns.tolist()] + df.values.tolist()
-        doc.build([Table(table_data)])
+        pdf_bytes = pdf.output(dest="S").encode("latin-1")
 
         st.download_button(
-            "📄 Download PDF",
-            pdf_buffer.getvalue(),
-            "lab_report.pdf",
+            "⬇ Download PDF",
+            pdf_bytes,
+            "cbc_report.pdf",
             "application/pdf"
         )
 
-st.markdown("""
-<hr>
-<center>
-<small>⚠️ Educational tool only. Please consult a medical professional.</small>
-</center>
-""", unsafe_allow_html=True)
+st.markdown("---")
+st.caption("⚠ Educational use only. Always consult a medical professional.")
