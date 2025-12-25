@@ -1,110 +1,80 @@
 import streamlit as st
-import pytesseract
+import easyocr
+import cv2
+import numpy as np
 from PIL import Image
-import re
 import pandas as pd
+import re
 
-# -------------------- PAGE CONFIG --------------------
-st.set_page_config(page_title="Lab Report Analyzer", layout="wide")
+st.set_page_config(page_title="CBC Lab Report Analyzer", layout="wide")
+
 st.title("🧪 Medical Lab Report Analyzer (CBC)")
+st.write("Upload a **clear CBC lab report image (PNG/JPG)**")
 
-# -------------------- CBC TEST MASTER --------------------
-CBC_TESTS = {
-    "haemoglobin": (13, 17),
-    "hemoglobin": (13, 17),
-    "total leucocyte count": (4000, 10000),
-    "neutrophils": (40, 80),
-    "lymphocytes": (20, 40),
-    "eosinophils": (1, 6),
-    "monocytes": (2, 10),
-    "basophils": (0, 1),
-    "rbc count": (4.5, 5.5),
-    "mcv": (81, 101),
-    "mch": (27, 32),
-    "mchc": (31.5, 34.5),
-    "rdw-cv": (11.6, 14.0),
-    "rdw sd": (39, 46),
-    "platelet count": (150000, 410000),
-    "mpv": (7.5, 11.5),
-    "pdw": (9, 17)
-}
-
-# -------------------- TEXT CLEANER --------------------
-def clean_text(text):
-    text = text.lower()
-    text = text.replace("\n", " ")
-    text = text.replace("/cumm", "")
-    text = text.replace("/cu.mm", "")
-    text = text.replace("%", "")
-    text = text.replace(":", "")
-    text = re.sub(r"\s+", " ", text)
-    return text
-
-# -------------------- CBC EXTRACTION --------------------
-def extract_cbc(text):
-    text = clean_text(text)
-    results = []
-
-    for test, (low, high) in CBC_TESTS.items():
-        pattern = rf"{test}\s+([\d\.]+)"
-        match = re.search(pattern, text)
-
-        if match:
-            value = float(match.group(1))
-
-            if value < low:
-                status = "Low 🔵"
-            elif value > high:
-                status = "High 🔴"
-            else:
-                status = "Normal 🟢"
-
-            results.append({
-                "Test Name": test.title(),
-                "Result": value,
-                "Normal Range": f"{low} - {high}",
-                "Status": status
-            })
-
-    return results
-
-# -------------------- FILE UPLOAD --------------------
 uploaded_file = st.file_uploader(
-    "📤 Upload Lab Report Image",
+    "Upload Lab Report Image",
     type=["png", "jpg", "jpeg"]
 )
 
+@st.cache_resource
+def load_reader():
+    return easyocr.Reader(['en'], gpu=False)
+
+reader = load_reader()
+
+def preprocess(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.bilateralFilter(gray, 11, 17, 17)
+    return gray
+
+def extract_text(img):
+    results = reader.readtext(img, detail=0, paragraph=True)
+    return "\n".join(results)
+
+def parse_cbc(text):
+    patterns = {
+        "Hemoglobin (g/dL)": r"Haemoglobin|Hemoglobin.*?(\d+\.?\d*)",
+        "Total WBC (/cumm)": r"Total.*?(Leuco|WBC).*?(\d{3,6})",
+        "Platelet Count (/cumm)": r"Platelet.*?(\d{5,7})",
+        "RBC (million/cumm)": r"RBC.*?(\d+\.?\d*)",
+        "MCV (fL)": r"MCV.*?(\d+\.?\d*)",
+        "MCH (pg)": r"MCH.*?(\d+\.?\d*)",
+        "MCHC (g/dL)": r"MCHC.*?(\d+\.?\d*)"
+    }
+
+    extracted = {}
+    for test, pattern in patterns.items():
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            extracted[test] = match.groups()[-1]
+
+    return extracted
+
 if uploaded_file:
     image = Image.open(uploaded_file)
-    st.image(image, caption="Uploaded Report", use_container_width=True)
+    st.image(image, caption="Uploaded CBC Report", use_column_width=True)
 
-    with st.spinner("🔍 Reading report..."):
-        ocr_text = pytesseract.image_to_string(image)
+    img_np = np.array(image)
+    processed = preprocess(img_np)
 
-    st.subheader("📄 Extracted Text")
-    with st.expander("Show OCR Text"):
+    with st.spinner("🔍 Reading report using EasyOCR..."):
+        ocr_text = extract_text(processed)
+        cbc_data = parse_cbc(ocr_text)
+
+    st.subheader("🧾 OCR Extracted Text (Debug)")
+    with st.expander("Show OCR text"):
         st.text(ocr_text)
 
-    extracted_data = extract_cbc(ocr_text)
+    if cbc_data:
+        st.success("✅ CBC values detected successfully")
 
-    if extracted_data:
-        df = pd.DataFrame(extracted_data)
-
-        st.subheader("📊 CBC Analysis Result")
-        st.dataframe(df, use_container_width=True)
-
-        # -------------------- DOWNLOAD --------------------
-        csv = df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "⬇️ Download Result as CSV",
-            data=csv,
-            file_name="cbc_report_analysis.csv",
-            mime="text/csv"
+        df = pd.DataFrame(
+            cbc_data.items(),
+            columns=["Test", "Value"]
         )
 
-    else:
-        st.warning("⚠️ No CBC parameters detected. Try a clearer image.")
+        st.subheader("📊 Extracted CBC Results")
+        st.table(df)
 
-# -------------------- FOOTER --------------------
-st.markdown("---")
-st.caption("⚠️ For educational purposes only. Consult a doctor for medical advice.")
+    else:
+        st.error("❌ Unable to detect CBC values. Please upload a clearer image.")
