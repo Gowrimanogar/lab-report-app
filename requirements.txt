@@ -4,5 +4,6 @@ pillow
 numpy
 pandas
 opencv-python-headless
-reportlab
+fpdf
+
 
