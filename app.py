@@ -1,172 +1,110 @@
 import streamlit as st
+import pytesseract
+from PIL import Image
+import re
+import pandas as pd
 
-# -------------------------------------------------
-# PAGE CONFIG
-# -------------------------------------------------
-st.set_page_config(
-    page_title="AI Lab Report Digitizer",
-    page_icon="🧪",
-    layout="wide",
-    initial_sidebar_state="expanded"
+# -------------------- PAGE CONFIG --------------------
+st.set_page_config(page_title="Lab Report Analyzer", layout="wide")
+st.title("🧪 Medical Lab Report Analyzer (CBC)")
+
+# -------------------- CBC TEST MASTER --------------------
+CBC_TESTS = {
+    "haemoglobin": (13, 17),
+    "hemoglobin": (13, 17),
+    "total leucocyte count": (4000, 10000),
+    "neutrophils": (40, 80),
+    "lymphocytes": (20, 40),
+    "eosinophils": (1, 6),
+    "monocytes": (2, 10),
+    "basophils": (0, 1),
+    "rbc count": (4.5, 5.5),
+    "mcv": (81, 101),
+    "mch": (27, 32),
+    "mchc": (31.5, 34.5),
+    "rdw-cv": (11.6, 14.0),
+    "rdw sd": (39, 46),
+    "platelet count": (150000, 410000),
+    "mpv": (7.5, 11.5),
+    "pdw": (9, 17)
+}
+
+# -------------------- TEXT CLEANER --------------------
+def clean_text(text):
+    text = text.lower()
+    text = text.replace("\n", " ")
+    text = text.replace("/cumm", "")
+    text = text.replace("/cu.mm", "")
+    text = text.replace("%", "")
+    text = text.replace(":", "")
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+# -------------------- CBC EXTRACTION --------------------
+def extract_cbc(text):
+    text = clean_text(text)
+    results = []
+
+    for test, (low, high) in CBC_TESTS.items():
+        pattern = rf"{test}\s+([\d\.]+)"
+        match = re.search(pattern, text)
+
+        if match:
+            value = float(match.group(1))
+
+            if value < low:
+                status = "Low 🔵"
+            elif value > high:
+                status = "High 🔴"
+            else:
+                status = "Normal 🟢"
+
+            results.append({
+                "Test Name": test.title(),
+                "Result": value,
+                "Normal Range": f"{low} - {high}",
+                "Status": status
+            })
+
+    return results
+
+# -------------------- FILE UPLOAD --------------------
+uploaded_file = st.file_uploader(
+    "📤 Upload Lab Report Image",
+    type=["png", "jpg", "jpeg"]
 )
 
-# -------------------------------------------------
-# GLOBAL STYLING (FIX 3 – BEAUTIFUL PROFESSIONAL UI)
-# -------------------------------------------------
-st.markdown("""
-<style>
+if uploaded_file:
+    image = Image.open(uploaded_file)
+    st.image(image, caption="Uploaded Report", use_container_width=True)
 
-/* MAIN BACKGROUND */
-.stApp {
-    background: linear-gradient(135deg, #0f172a, #020617);
-}
+    with st.spinner("🔍 Reading report..."):
+        ocr_text = pytesseract.image_to_string(image)
 
-/* SIDEBAR */
-[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #020617, #020617);
-    border-right: 1px solid #1e293b;
-}
+    st.subheader("📄 Extracted Text")
+    with st.expander("Show OCR Text"):
+        st.text(ocr_text)
 
-/* CARDS */
-.card {
-    background: rgba(15, 23, 42, 0.85);
-    padding: 25px;
-    border-radius: 18px;
-    border: 1px solid #1e293b;
-    box-shadow: 0 10px 25px rgba(0,0,0,0.4);
-}
+    extracted_data = extract_cbc(ocr_text)
 
-/* HEADINGS */
-h1 {
-    color: #38bdf8;
-    font-size: 48px;
-    font-weight: 800;
-}
+    if extracted_data:
+        df = pd.DataFrame(extracted_data)
 
-h2 {
-    color: #7dd3fc;
-}
+        st.subheader("📊 CBC Analysis Result")
+        st.dataframe(df, use_container_width=True)
 
-h3 {
-    color: #bae6fd;
-}
+        # -------------------- DOWNLOAD --------------------
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "⬇️ Download Result as CSV",
+            data=csv,
+            file_name="cbc_report_analysis.csv",
+            mime="text/csv"
+        )
 
-/* TEXT */
-p {
-    color: #e5e7eb;
-    font-size: 18px;
-}
+    else:
+        st.warning("⚠️ No CBC parameters detected. Try a clearer image.")
 
-/* BUTTONS */
-.stButton > button {
-    background: linear-gradient(90deg, #38bdf8, #0ea5e9);
-    color: black;
-    border-radius: 12px;
-    padding: 10px 20px;
-    font-size: 16px;
-    border: none;
-}
-
-.stButton > button:hover {
-    background: linear-gradient(90deg, #0ea5e9, #38bdf8);
-}
-
-/* FILE UPLOADER */
-[data-testid="stFileUploader"] {
-    background-color: #020617;
-    border-radius: 15px;
-    padding: 15px;
-    border: 1px dashed #38bdf8;
-}
-
-/* FOOTER */
-.footer {
-    text-align: center;
-    color: #94a3b8;
-    margin-top: 40px;
-    font-size: 14px;
-}
-
-</style>
-""", unsafe_allow_html=True)
-
-# -------------------------------------------------
-# HERO SECTION
-# -------------------------------------------------
-st.markdown("""
-<div class="card">
-    <h1>🧪 AI Lab Report Digitizer</h1>
-    <p>
-        Upload medical lab reports and instantly convert them into 
-        <b>digital analytics, abnormal highlights, and downloadable reports</b>.
-    </p>
-</div>
-""", unsafe_allow_html=True)
-
-st.markdown("<br>", unsafe_allow_html=True)
-
-# -------------------------------------------------
-# FEATURES SECTION
-# -------------------------------------------------
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    st.markdown("""
-    <div class="card">
-        <h3>📷 Image to Data</h3>
-        <p>Upload scanned lab reports or photos and extract test values automatically.</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-with col2:
-    st.markdown("""
-    <div class="card">
-        <h3>🟢🔴 Abnormal Detection</h3>
-        <p>Normal values appear in green and abnormal results highlighted in red.</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-with col3:
-    st.markdown("""
-    <div class="card">
-        <h3>📄 Download Reports</h3>
-        <p>Export analyzed reports in <b>PDF</b> and <b>CSV</b> formats.</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-# -------------------------------------------------
-# HOW TO USE
-# -------------------------------------------------
-st.markdown("<br>", unsafe_allow_html=True)
-
-st.markdown("""
-<div class="card">
-    <h2>🚀 How to Use</h2>
-    <ol style="color:#e5e7eb; font-size:18px;">
-        <li>Go to the <b>Dashboard</b> from the sidebar</li>
-        <li>Upload your medical lab report image</li>
-        <li>View extracted test values and abnormal highlights</li>
-        <li>Download PDF or CSV reports</li>
-    </ol>
-</div>
-""", unsafe_allow_html=True)
-
-# -------------------------------------------------
-# MEDICAL IMAGE (RELATED & SAFE)
-# -------------------------------------------------
-st.markdown("<br>", unsafe_allow_html=True)
-
-st.image(
-    "https://images.unsplash.com/photo-1582719478250-c89cae4dc85b",
-    caption="AI-powered medical diagnostics",
-    use_container_width=True
-)
-
-# -------------------------------------------------
-# FOOTER
-# -------------------------------------------------
-st.markdown("""
-<div class="footer">
-    © 2025 AI Lab Report Digitizer • Built with Streamlit & OCR
-</div>
-""", unsafe_allow_html=True)
+# -------------------- FOOTER --------------------
+st.markdown("---")
+st.caption("⚠️ For educational purposes only. Consult a doctor for medical advice.")
