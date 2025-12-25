@@ -1,29 +1,37 @@
 import easyocr
+import re
 import numpy as np
 from PIL import Image
-import re
 
 reader = easyocr.Reader(['en'], gpu=False)
 
-NORMAL_RANGES = {
-    "Hemoglobin": (13, 17),
-    "WBC": (4000, 11000),
-    "Platelets": (150000, 450000),
-    "RBC": (4.5, 5.9),
-    "Glucose": (70, 140)
+CBC_TESTS = {
+    "Hemoglobin": (13.0, 17.0),
+    "RBC": (4.5, 5.5),
+    "PCV": (40, 50),
+    "MCV": (83, 101),
+    "MCH": (27, 32),
+    "MCHC": (31.5, 34.5),
+    "RDW-SD": (39, 46),
+    "RDW-CV": (11.6, 14.0),
+    "Total Leucocyte Count": (4, 10),
+    "Platelet Count": (150, 410),
 }
 
 def extract_text_from_image(uploaded_file):
     image = Image.open(uploaded_file).convert("RGB")
     image_np = np.array(image)
 
-    results = reader.readtext(image_np, detail=0)
-    text = "\n".join(results)
+    ocr_results = reader.readtext(image_np, detail=0)
+
+    text = "\n".join(ocr_results)
 
     extracted = []
 
-    for test, (low, high) in NORMAL_RANGES.items():
-        match = re.search(rf"{test}\s*[:\-]?\s*(\d+\.?\d*)", text, re.IGNORECASE)
+    for test, (low, high) in CBC_TESTS.items():
+        pattern = rf"{test}.*?([\d\.]+)"
+        match = re.search(pattern, text, re.IGNORECASE)
+
         if match:
             value = float(match.group(1))
             status = "Normal" if low <= value <= high else "Abnormal"
@@ -31,8 +39,7 @@ def extract_text_from_image(uploaded_file):
             extracted.append({
                 "Test": test,
                 "Value": value,
-                "Low": low,
-                "High": high,
+                "Normal Range": f"{low} - {high}",
                 "Status": status
             })
 
