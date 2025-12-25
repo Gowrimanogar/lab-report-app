@@ -1,11 +1,16 @@
 import easyocr
-import re
 import numpy as np
 from PIL import Image
+import re
 
 reader = easyocr.Reader(['en'], gpu=False)
 
-CBC_TESTS = {
+CBC_KEYWORDS = [
+    "Hemoglobin", "RBC", "PCV", "MCV", "MCH", "MCHC",
+    "RDW", "WBC", "Platelet"
+]
+
+NORMAL_RANGES = {
     "Hemoglobin": (13.0, 17.0),
     "RBC": (4.5, 5.5),
     "PCV": (40, 50),
@@ -19,29 +24,31 @@ CBC_TESTS = {
 
 def extract_text_from_image(uploaded_file):
     image = Image.open(uploaded_file).convert("RGB")
-    image_np = np.array(image)
+    img_np = np.array(image)
 
-    ocr_results = reader.readtext(image_np, detail=0)
-    text = "\n".join(ocr_results)
+    lines = reader.readtext(img_np, detail=0)
 
     extracted = []
 
-    for test, (low, high) in CBC_TESTS.items():
-        pattern = rf"{test}.*?(\d+\.?\d*)"
-        match = re.search(pattern, text, re.IGNORECASE)
+    for line in lines:
+        for test in CBC_KEYWORDS:
+            if test.lower() in line.lower():
+                numbers = re.findall(r"\d+\.\d+|\d+", line)
+                if numbers:
+                    value = float(numbers[0])
+                    low, high = NORMAL_RANGES[test]
 
-        if match:
-            value = float(match.group(1))
-            status = "Normal"
+                    status = "Normal"
+                    if value < low or value > high:
+                        status = "Abnormal"
 
-            if value < low or value > high:
-                status = "Abnormal"
+                    extracted.append({
+                        "Test": test,
+                        "Value": value,
+                        "Normal Range": f"{low} - {high}",
+                        "Status": status
+                    })
 
-            extracted.append({
-                "Test": test,
-                "Value": value,
-                "Normal Range": f"{low} - {high}",
-                "Status": status
-            })
-
-    return extracted
+    # Remove duplicates
+    unique = {d["Test"]: d for d in extracted}
+    return list(unique.values())
