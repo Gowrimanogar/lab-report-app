@@ -1,151 +1,126 @@
 import streamlit as st
 import easyocr
-import cv2
 import numpy as np
-from PIL import Image
 import pandas as pd
 import re
+from PIL import Image
 from io import BytesIO
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Table
 from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.colors import red, green, black
 
-# ---------------- PAGE CONFIG ----------------
-st.set_page_config(page_title="CBC Lab Analyzer", layout="wide")
-st.title("🧪 CBC Lab Report Analyzer")
-st.caption("Automatic CBC extraction + analysis")
+# ---------------- CONFIG ----------------
+st.set_page_config(
+    page_title="AI Lab Report Digitizer",
+    page_icon="🧪",
+    layout="wide"
+)
 
-# ---------------- LOAD OCR ----------------
+# ---------------- STYLE ----------------
+st.markdown("""
+<style>
+body {
+    background: linear-gradient(to right, #0f2027, #203a43, #2c5364);
+}
+.block-container {
+    background: rgba(255,255,255,0.95);
+    border-radius: 16px;
+    padding: 25px;
+}
+h1, h2, h3 {
+    color: #0f2027;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ---------------- OCR ----------------
 @st.cache_resource
 def load_reader():
-    return easyocr.Reader(['en'], gpu=False)
+    return easyocr.Reader(['en'])
 
 reader = load_reader()
 
-# ---------------- PREPROCESS IMAGE ----------------
-def preprocess(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-    return gray
+def ocr_image(img):
+    results = reader.readtext(np.array(img))
+    return " ".join([r[1] for r in results])
 
-# ---------------- OCR ----------------
-def run_ocr(img):
-    text = reader.readtext(img, detail=0)
-    return [t.strip() for t in text if t.strip()]
-
-# ---------------- CBC REFERENCE RANGES ----------------
-CBC_RANGES = {
-    "hemoglobin": (13, 17),
-    "rbc": (4.5, 5.5),
-    "wbc": (4000, 10000),
-    "platelet": (150000, 410000),
-    "mcv": (81, 101),
-    "mch": (27, 32),
-    "mchc": (31.5, 34.5),
-    "rdw": (11.6, 14.0),
-    "mpv": (7.5, 11.5)
+# ---------------- TEST RANGES ----------------
+TESTS = {
+    "Hemoglobin": (13, 17),
+    "WBC": (4000, 11000),
+    "Platelets": (150000, 450000),
+    "RBC": (4.5, 5.9),
+    "Blood Sugar": (70, 140),
+    "Cholesterol": (125, 200),
+    "Creatinine": (0.6, 1.3)
 }
 
-CBC_KEYS = list(CBC_RANGES.keys())
-
-# ---------------- CBC EXTRACTION ----------------
-def extract_cbc(lines):
+# ---------------- EXTRACT VALUES ----------------
+def extract_values(text):
     data = []
-    used = set()
+    for test, (low, high) in TESTS.items():
+        match = re.search(fr"{test}[^0-9]*([\d.]+)", text, re.IGNORECASE)
+        if match:
+            value = float(match.group(1))
+            status = "Normal"
+            color = "🟢"
+            if value < low:
+                status = "Low"
+                color = "🔴"
+            elif value > high:
+                status = "High"
+                color = "🔴"
 
-    for i, line in enumerate(lines):
-        l = line.lower()
+            data.append([test, value, low, high, f"{color} {status}"])
+    return pd.DataFrame(data, columns=["Test", "Value", "Low", "High", "Status"])
 
-        for test in CBC_KEYS:
-            if test in l and i not in used:
-                block = " ".join(lines[i:i+3])
-                val = re.search(r"\d+\.?\d*", block)
-                if val:
-                    data.append([test.capitalize(), float(val.group())])
-                    used.add(i)
-
-    return data
-
-# ---------------- STATUS FLAG ----------------
-def flag_status(test, value):
-    key = test.lower()
-    if key in CBC_RANGES:
-        low, high = CBC_RANGES[key]
-        if value < low:
-            return "🔴 Low"
-        elif value > high:
-            return "🔴 High"
-        else:
-            return "🟢 Normal"
-    return "—"
-
-# ---------------- PDF GENERATOR ----------------
-def generate_pdf(df):
+# ---------------- PDF ----------------
+def create_pdf(df):
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer)
     styles = getSampleStyleSheet()
-    elements = []
 
-    elements.append(Paragraph("<b>CBC Lab Report</b>", styles["Title"]))
+    content = [Paragraph("AI Digitized Lab Report", styles["Title"])]
+    table_data = [df.columns.tolist()] + df.values.tolist()
+    content.append(Table(table_data))
+    doc.build(content)
 
-    table_data = [["Test", "Value", "Status"]]
-    for _, r in df.iterrows():
-        table_data.append([r["Test"], r["Value"], r["Status"]])
-
-    table = Table(table_data)
-    elements.append(table)
-
-    doc.build(elements)
     buffer.seek(0)
     return buffer
 
-# ---------------- FILE UPLOAD ----------------
-uploaded = st.file_uploader("Upload CBC Report Image (PNG/JPG)", type=["png","jpg","jpeg"])
+# ---------------- UI ----------------
+st.title("🧪 AI Lab Report Digitizer")
+st.write("Upload a **medical lab report image** and get instant digital results.")
+
+uploaded = st.file_uploader("📤 Upload Lab Report Image", type=["png","jpg","jpeg"])
 
 if uploaded:
-    img = Image.open(uploaded)
-    st.image(img, use_column_width=True)
+    image = Image.open(uploaded)
+    st.image(image, caption="Uploaded Report", use_column_width=True)
 
-    img_np = np.array(img)
-    processed = preprocess(img_np)
+    with st.spinner("🔍 Reading report..."):
+        text = ocr_image(image)
 
-    with st.spinner("🔍 Extracting CBC values..."):
-        lines = run_ocr(processed)
-        cbc = extract_cbc(lines)
+    st.subheader("📝 OCR Extracted Text")
+    st.text_area("Detected Text", text, height=150)
 
-    # DEBUG TEXT
-    with st.expander("🔎 OCR Debug Text"):
-        for l in lines:
-            st.write(l)
+    df = extract_values(text)
 
-    if cbc:
-        df = pd.DataFrame(cbc, columns=["Test", "Value"])
-        df["Status"] = df.apply(lambda x: flag_status(x["Test"], x["Value"]), axis=1)
+    if not df.empty:
+        st.subheader("📊 Digitized Results")
+        st.dataframe(df, use_container_width=True)
 
-        st.success(f"✅ {len(df)} CBC parameters detected")
+        col1, col2 = st.columns(2)
 
-        # COLOR DISPLAY
-        def color_row(val):
-            if "High" in val or "Low" in val:
-                return "color:red;font-weight:bold"
-            if "Normal" in val:
-                return "color:green;font-weight:bold"
-            return ""
+        with col1:
+            csv = df.to_csv(index=False).encode("utf-8")
+            st.download_button("⬇ Download CSV", csv, "lab_report.csv", "text/csv")
 
-        st.dataframe(df.style.applymap(color_row, subset=["Status"]), use_container_width=True)
-
-        # ANALYTICS
-        st.subheader("📊 Analytics")
-        st.bar_chart(df.set_index("Test")["Value"])
-
-        # DOWNLOADS
-        st.subheader("⬇ Downloads")
-
-        csv = df.to_csv(index=False).encode()
-        st.download_button("📄 Download CSV", csv, "cbc_report.csv", "text/csv")
-
-        pdf = generate_pdf(df)
-        st.download_button("📄 Download PDF", pdf, "cbc_report.pdf", "application/pdf")
+        with col2:
+            pdf = create_pdf(df)
+            st.download_button("⬇ Download PDF", pdf, "lab_report.pdf", "application/pdf")
 
     else:
-        st.error("❌ No CBC values detected. Please upload a clearer CBC table image.")
+        st.error("❌ No lab values detected. Try a clearer image.")
+
+st.markdown("---")
+st.caption("© AI Lab Report Digitizer | EasyOCR Powered")
