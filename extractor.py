@@ -12,10 +12,9 @@ CBC_TESTS = {
     "MCV": (83, 101),
     "MCH": (27, 32),
     "MCHC": (31.5, 34.5),
-    "RDW-SD": (39, 46),
-    "RDW-CV": (11.6, 14.0),
-    "Total Leucocyte Count": (4, 10),
-    "Platelet Count": (150, 410),
+    "RDW": (11.6, 14.0),
+    "WBC": (4.0, 10.0),
+    "Platelet": (150, 410)
 }
 
 def extract_text_from_image(uploaded_file):
@@ -23,18 +22,20 @@ def extract_text_from_image(uploaded_file):
     image_np = np.array(image)
 
     ocr_results = reader.readtext(image_np, detail=0)
-
     text = "\n".join(ocr_results)
 
     extracted = []
 
     for test, (low, high) in CBC_TESTS.items():
-        pattern = rf"{test}.*?([\d\.]+)"
+        pattern = rf"{test}.*?(\d+\.?\d*)"
         match = re.search(pattern, text, re.IGNORECASE)
 
         if match:
             value = float(match.group(1))
-            status = "Normal" if low <= value <= high else "Abnormal"
+            status = "Normal"
+
+            if value < low or value > high:
+                status = "Abnormal"
 
             extracted.append({
                 "Test": test,
