@@ -5,99 +5,147 @@ import numpy as np
 from PIL import Image
 import pandas as pd
 import re
+from io import BytesIO
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Table
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.colors import red, green, black
 
-# ---------------- CONFIG ----------------
+# ---------------- PAGE CONFIG ----------------
 st.set_page_config(page_title="CBC Lab Analyzer", layout="wide")
 st.title("🧪 CBC Lab Report Analyzer")
-st.write("Upload a clear CBC report image (PNG / JPG)")
+st.caption("Automatic CBC extraction + analysis")
 
-# ---------------- OCR LOADER ----------------
+# ---------------- LOAD OCR ----------------
 @st.cache_resource
-def load_ocr():
+def load_reader():
     return easyocr.Reader(['en'], gpu=False)
 
-reader = load_ocr()
+reader = load_reader()
 
-# ---------------- IMAGE PREPROCESS ----------------
+# ---------------- PREPROCESS IMAGE ----------------
 def preprocess(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray = cv2.adaptiveThreshold(
-        gray, 255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY,
-        31, 2
-    )
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
     return gray
 
 # ---------------- OCR ----------------
-def extract_text(img):
-    result = reader.readtext(img, detail=0, paragraph=False)
-    return result
+def run_ocr(img):
+    text = reader.readtext(img, detail=0)
+    return [t.strip() for t in text if t.strip()]
 
-# ---------------- SMART CBC PARSER ----------------
-def extract_cbc_values(lines):
-    cbc_data = []
+# ---------------- CBC REFERENCE RANGES ----------------
+CBC_RANGES = {
+    "hemoglobin": (13, 17),
+    "rbc": (4.5, 5.5),
+    "wbc": (4000, 10000),
+    "platelet": (150000, 410000),
+    "mcv": (81, 101),
+    "mch": (27, 32),
+    "mchc": (31.5, 34.5),
+    "rdw": (11.6, 14.0),
+    "mpv": (7.5, 11.5)
+}
 
-    for line in lines:
-        line = line.strip()
+CBC_KEYS = list(CBC_RANGES.keys())
 
-        # Pattern: TEST NAME  VALUE  UNIT
-        match = re.search(
-            r"([A-Za-z ()/%\-]+)\s+(\d+\.?\d*)\s*(g/dL|%|fL|pg|/cumm|million|10\^3|10\^6)?",
-            line
-        )
+# ---------------- CBC EXTRACTION ----------------
+def extract_cbc(lines):
+    data = []
+    used = set()
 
-        if match:
-            test = match.group(1).strip()
-            value = match.group(2)
-            unit = match.group(3) if match.group(3) else ""
+    for i, line in enumerate(lines):
+        l = line.lower()
 
-            # Remove junk lines
-            if len(test) > 3 and not test.lower().startswith("ref"):
-                cbc_data.append([test, value, unit])
+        for test in CBC_KEYS:
+            if test in l and i not in used:
+                block = " ".join(lines[i:i+3])
+                val = re.search(r"\d+\.?\d*", block)
+                if val:
+                    data.append([test.capitalize(), float(val.group())])
+                    used.add(i)
 
-    return cbc_data
+    return data
+
+# ---------------- STATUS FLAG ----------------
+def flag_status(test, value):
+    key = test.lower()
+    if key in CBC_RANGES:
+        low, high = CBC_RANGES[key]
+        if value < low:
+            return "🔴 Low"
+        elif value > high:
+            return "🔴 High"
+        else:
+            return "🟢 Normal"
+    return "—"
+
+# ---------------- PDF GENERATOR ----------------
+def generate_pdf(df):
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer)
+    styles = getSampleStyleSheet()
+    elements = []
+
+    elements.append(Paragraph("<b>CBC Lab Report</b>", styles["Title"]))
+
+    table_data = [["Test", "Value", "Status"]]
+    for _, r in df.iterrows():
+        table_data.append([r["Test"], r["Value"], r["Status"]])
+
+    table = Table(table_data)
+    elements.append(table)
+
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
 
 # ---------------- FILE UPLOAD ----------------
-uploaded_file = st.file_uploader(
-    "Upload CBC Image",
-    type=["png", "jpg", "jpeg"]
-)
+uploaded = st.file_uploader("Upload CBC Report Image (PNG/JPG)", type=["png","jpg","jpeg"])
 
-if uploaded_file:
-    image = Image.open(uploaded_file)
-    st.image(image, caption="Uploaded Report", use_column_width=True)
+if uploaded:
+    img = Image.open(uploaded)
+    st.image(img, use_column_width=True)
 
-    img_np = np.array(image)
+    img_np = np.array(img)
     processed = preprocess(img_np)
 
-    with st.spinner("🔍 Reading report using EasyOCR..."):
-        ocr_lines = extract_text(processed)
-        cbc_rows = extract_cbc_values(ocr_lines)
+    with st.spinner("🔍 Extracting CBC values..."):
+        lines = run_ocr(processed)
+        cbc = extract_cbc(lines)
 
-    # ---------------- DEBUG ----------------
-    with st.expander("🔎 OCR Raw Text"):
-        for l in ocr_lines:
+    # DEBUG TEXT
+    with st.expander("🔎 OCR Debug Text"):
+        for l in lines:
             st.write(l)
 
-    # ---------------- RESULTS ----------------
-    if cbc_rows:
-        df = pd.DataFrame(
-            cbc_rows,
-            columns=["Test Name", "Value", "Unit"]
-        )
+    if cbc:
+        df = pd.DataFrame(cbc, columns=["Test", "Value"])
+        df["Status"] = df.apply(lambda x: flag_status(x["Test"], x["Value"]), axis=1)
 
-        st.success(f"✅ Detected {len(df)} CBC tests")
-        st.dataframe(df, use_container_width=True)
+        st.success(f"✅ {len(df)} CBC parameters detected")
 
-        # ---------------- ANALYTICS ----------------
+        # COLOR DISPLAY
+        def color_row(val):
+            if "High" in val or "Low" in val:
+                return "color:red;font-weight:bold"
+            if "Normal" in val:
+                return "color:green;font-weight:bold"
+            return ""
+
+        st.dataframe(df.style.applymap(color_row, subset=["Status"]), use_container_width=True)
+
+        # ANALYTICS
         st.subheader("📊 Analytics")
-        numeric_df = df.copy()
-        numeric_df["Value"] = pd.to_numeric(numeric_df["Value"], errors="coerce")
+        st.bar_chart(df.set_index("Test")["Value"])
 
-        st.bar_chart(
-            numeric_df.set_index("Test Name")["Value"]
-        )
+        # DOWNLOADS
+        st.subheader("⬇ Downloads")
+
+        csv = df.to_csv(index=False).encode()
+        st.download_button("📄 Download CSV", csv, "cbc_report.csv", "text/csv")
+
+        pdf = generate_pdf(df)
+        st.download_button("📄 Download PDF", pdf, "cbc_report.pdf", "application/pdf")
 
     else:
-        st.error("❌ No CBC values detected. Try a clearer image.")
+        st.error("❌ No CBC values detected. Please upload a clearer CBC table image.")
