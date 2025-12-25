@@ -1,113 +1,171 @@
 import streamlit as st
 import easyocr
 import numpy as np
-from PIL import Image
 import pandas as pd
+from PIL import Image
 from fpdf import FPDF
+import re
+import io
 
-# ------------------ PAGE CONFIG ------------------
+# -------------------------------------------------
+# PAGE CONFIG
+# -------------------------------------------------
 st.set_page_config(
     page_title="Lab Report Digitizer",
-    page_icon="🧪",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="collapsed"
 )
 
-st.title("🧪 Lab Report Digitizer")
+# -------------------------------------------------
+# HEADER WITH MEDICAL IMAGE
+# -------------------------------------------------
+st.markdown("""
+<style>
+.header-box {
+    background-color: #0f172a;
+    padding: 25px;
+    border-radius: 12px;
+}
+.header-title {
+    font-size: 42px;
+    font-weight: bold;
+    color: #ffffff;
+}
+.header-sub {
+    color: #94a3b8;
+    font-size: 18px;
+}
+</style>
+""", unsafe_allow_html=True)
 
-# ------------------ OCR FUNCTION ------------------
-@st.cache_data
-def extract_text(image_array):
-    reader = easyocr.Reader(['en'], gpu=False)
-    text = reader.readtext(image_array, detail=0)
-    return " ".join(text)
+st.markdown("""
+<div class="header-box">
+    <div class="header-title">🧪 Lab Report Digitizer</div>
+    <div class="header-sub">
+        Convert medical lab reports into structured digital data
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
-# ------------------ VALUE STATUS LOGIC ------------------
-def check_status(test, value):
-    if test == "Hemoglobin":
-        return "Normal" if 13 <= value <= 17 else "Abnormal"
-    if test == "Blood Sugar":
-        return "Normal" if value <= 140 else "High"
-    if test == "Cholesterol":
-        return "Normal" if value <= 200 else "High"
-    return "Unknown"
+st.write("")
 
-# ------------------ PDF GENERATOR ------------------
+# -------------------------------------------------
+# LOAD OCR MODEL (CACHED)
+# -------------------------------------------------
+@st.cache_resource
+def load_reader():
+    return easyocr.Reader(['en'], gpu=False)
+
+reader = load_reader()
+
+# -------------------------------------------------
+# OCR FUNCTION (NO CACHE – IMAGE IS UNHASHABLE)
+# -------------------------------------------------
+def ocr_image(image):
+    img_array = np.array(image)
+    results = reader.readtext(img_array)
+    text = " ".join([res[1] for res in results])
+    return text
+
+# -------------------------------------------------
+# AUTO TEST DETECTION
+# -------------------------------------------------
+def extract_tests(text):
+    rows = []
+
+    # Generic pattern: TestName value
+    pattern = r"([A-Za-z ]{3,25})\s*[:\-]?\s*(\d+\.?\d*)"
+
+    matches = re.findall(pattern, text)
+
+    for test, value in matches:
+        test = test.strip().title()
+        value = float(value)
+
+        # Simple normal logic (generic)
+        status = "Normal"
+        if value <= 0:
+            status = "Abnormal"
+
+        rows.append([test, value, status])
+
+    df = pd.DataFrame(rows, columns=["Test Name", "Value", "Status"])
+
+    # Remove duplicates
+    df = df.drop_duplicates(subset=["Test Name"])
+
+    return df
+
+# -------------------------------------------------
+# PDF GENERATOR
+# -------------------------------------------------
 def generate_pdf(df):
     pdf = FPDF()
     pdf.add_page()
-    pdf.set_font("Arial", "B", 16)
-    pdf.cell(0, 10, "Lab Report Summary", ln=True, align="C")
-    pdf.ln(10)
+    pdf.set_font("Arial", "B", 14)
+    pdf.cell(0, 10, "Lab Report - Digitized Results", ln=True)
 
-    pdf.set_font("Arial", "", 12)
+    pdf.ln(5)
+    pdf.set_font("Arial", size=11)
+
     for _, row in df.iterrows():
-        line = f"{row['Test Name']}: {row['Value']} ({row['Status']})"
-        pdf.cell(0, 10, line, ln=True)
+        pdf.cell(
+            0, 8,
+            f"{row['Test Name']} : {row['Value']} ({row['Status']})",
+            ln=True
+        )
 
-    file_path = "lab_report.pdf"
-    pdf.output(file_path)
-    return file_path
+    return pdf.output(dest="S").encode("latin-1")
 
-# ------------------ IMAGE UPLOAD ------------------
+# -------------------------------------------------
+# FILE UPLOAD
+# -------------------------------------------------
+st.subheader("📤 Upload Lab Report Image")
+
 uploaded_file = st.file_uploader(
-    "Upload Lab Report Image",
+    "",
     type=["png", "jpg", "jpeg"]
 )
 
 if uploaded_file:
     image = Image.open(uploaded_file)
-    image_array = np.array(image)
 
-    st.subheader("Uploaded Image")
-    st.image(image, width=400)
+    st.markdown("### 🖼 Uploaded Medical Report")
+    st.image(image, width=500)
 
-    # OCR
-    extracted_text = extract_text(image_array)
+    with st.spinner("🔍 Performing OCR on medical report..."):
+        text = ocr_image(image)
 
-    st.subheader("📄 OCR Output")
-    st.write(extracted_text)
+    st.markdown("### 📄 OCR Extracted Text")
+    st.info(text)
 
-    # ------------------ SIMPLE VALUE EXTRACTION ------------------
-    text_lower = extracted_text.lower()
+    df = extract_tests(text)
 
-    hb = 13.5 if "hemoglobin" in text_lower else 0
-    sugar = 110 if "sugar" in text_lower else 0
-    cholesterol = 180 if "cholesterol" in text_lower else 0
+    if not df.empty:
+        st.markdown("### 📊 Digitized Lab Values")
+        st.dataframe(df, use_container_width=True)
 
-    data = {
-        "Test Name": ["Hemoglobin", "Blood Sugar", "Cholesterol"],
-        "Value": [hb, sugar, cholesterol],
-        "Status": [
-            check_status("Hemoglobin", hb),
-            check_status("Blood Sugar", sugar),
-            check_status("Cholesterol", cholesterol)
-        ]
-    }
+        st.success("✅ Medical data extracted successfully")
 
-    df = pd.DataFrame(data)
+        # ---------------- DOWNLOAD OPTIONS ----------------
+        col1, col2 = st.columns(2)
 
-    # ------------------ DISPLAY RESULTS ------------------
-    st.subheader("📊 Digitized Values")
-    st.dataframe(df, width=600)
-
-    st.success("✅ Data extracted successfully")
-
-    # ------------------ CSV DOWNLOAD ------------------
-    csv = df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        label="📥 Download CSV",
-        data=csv,
-        file_name="lab_report.csv",
-        mime="text/csv"
-    )
-
-    # ------------------ PDF DOWNLOAD ------------------
-    if st.button("📄 Generate PDF"):
-        pdf_file = generate_pdf(df)
-        with open(pdf_file, "rb") as f:
+        with col1:
+            csv = df.to_csv(index=False).encode("utf-8")
             st.download_button(
-                label="⬇ Download PDF",
-                data=f,
-                file_name="Lab_Report.pdf",
-                mime="application/pdf"
+                "⬇ Download CSV",
+                csv,
+                "lab_results.csv",
+                "text/csv"
             )
+
+        with col2:
+            pdf_bytes = generate_pdf(df)
+            st.download_button(
+                "📄 Generate PDF",
+                pdf_bytes,
+                "lab_report.pdf",
+                "application/pdf"
+            )
+    else:
+        st.warning("⚠ No lab values detected in the report.")
