@@ -5,15 +5,13 @@ import easyocr
 import pandas as pd
 
 # -------------------------------
-# Streamlit Page Config
+# Page setup
 # -------------------------------
 st.set_page_config(page_title="Lab Report Digitizer", layout="centered")
-
-st.title("🧪 Lab Report Digitization App")
-st.write("Upload a lab report image to extract health parameters")
+st.title("🧪 Lab Report Digitizer")
 
 # -------------------------------
-# Load OCR model (cached)
+# Load OCR model once
 # -------------------------------
 @st.cache_resource
 def load_reader():
@@ -22,16 +20,15 @@ def load_reader():
 reader = load_reader()
 
 # -------------------------------
-# OCR function (cached correctly)
+# OCR function (cached)
 # -------------------------------
 @st.cache_data
 def ocr_image(_image):
     result = reader.readtext(np.array(_image))
-    text = " ".join([r[1] for r in result])
-    return text
+    return " ".join([r[1] for r in result])
 
 # -------------------------------
-# File uploader
+# Upload image
 # -------------------------------
 uploaded_file = st.file_uploader(
     "Upload Lab Report Image",
@@ -39,22 +36,17 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file is not None:
-    # -------------------------------
-    # Show image
-    # -------------------------------
     image = Image.open(uploaded_file)
     st.image(image, caption="Uploaded Image", use_column_width=True)
 
-    # -------------------------------
     # OCR
-    # -------------------------------
     text = ocr_image(image)
 
     st.subheader("📄 OCR Output")
     st.write(text)
 
     # -------------------------------
-    # Digitization Logic
+    # Extract values
     # -------------------------------
     st.subheader("📊 Digitized Values")
 
@@ -63,17 +55,43 @@ if uploaded_file is not None:
 
     i = 0
     while i < len(words) - 1:
-        word = words[i].lower()
-
         try:
-            # Hemoglobin
+            word = words[i].lower()
+
             if word == "hemoglobin":
                 value = float(words[i + 1])
                 status = "Normal" if 12 <= value <= 16 else "Abnormal"
                 params["Hemoglobin"] = f"{value} → {status}"
                 i += 2
 
-            # Blood Sugar
             elif word == "blood" and words[i + 1].lower() == "sugar":
                 value = float(words[i + 2])
-                status = "Normal" if
+                status = "Normal" if 70 <= value <= 140 else "Abnormal"
+                params["Blood Sugar"] = f"{value} → {status}"
+                i += 3
+
+            elif word == "cholesterol":
+                value = float(words[i + 1])
+                status = "Normal" if value < 200 else "Abnormal"
+                params["Cholesterol"] = f"{value} → {status}"
+                i += 2
+
+            else:
+                i += 1
+
+        except:
+            i += 1
+
+    if params:
+        for k, v in params.items():
+            st.write(f"**{k}:** {v}")
+
+        df = pd.DataFrame(params.items(), columns=["Parameter", "Result"])
+        df.to_csv("patient_data.csv", index=False)
+
+        st.success("✅ Data extracted successfully")
+    else:
+        st.warning("⚠️ No parameters found")
+
+else:
+    st.info("👆 Please upload a lab report image")
