@@ -35,7 +35,10 @@ if uploaded_file is not None:
         status = classify(p, v)
         final_data[p] = {"value": v, "status": status}
         st.write(f"{p}: {v} --> {status}")
+        easyocr
+
     
     # Save data
     save_data(final_data)
     st.success("Data saved to patient_data.csv ✅")
+
