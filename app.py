@@ -1,124 +1,95 @@
 import streamlit as st
-import easyocr
-import numpy as np
-import pandas as pd
-import re
 from PIL import Image
-from fpdf import FPDF
+import pytesseract
+import pandas as pd
+from pyzbar.pyzbar import decode
 import io
 
-# ---------------- CONFIG ----------------
-st.set_page_config(
-    page_title="CBC Lab Report Analyzer",
-    page_icon="🧪",
-    layout="wide"
+# ------------------ PAGE CONFIG ------------------
+st.set_page_config(page_title="Lab Report Generator", layout="centered")
+
+st.title("🧪 Lab Report Generator App")
+st.write("Upload a Medical Report image OR a QR / Barcode image")
+
+# ------------------ FUNCTIONS ------------------
+
+def scan_qr_or_barcode(image):
+    decoded_objects = decode(image)
+    results = []
+    for obj in decoded_objects:
+        results.append(obj.data.decode("utf-8"))
+    return results
+
+
+def extract_text_from_image(image):
+    return pytesseract.image_to_string(image)
+
+
+def extract_tests(text):
+    lines = text.split("\n")
+    data = []
+
+    for line in lines:
+        parts = line.split()
+        if len(parts) >= 2:
+            try:
+                test_name = " ".join(parts[:-1])
+                value = float(parts[-1])
+                data.append([test_name, value])
+            except:
+                pass
+
+    if not data:
+        return pd.DataFrame()
+
+    return pd.DataFrame(data, columns=["Test Name", "Value"])
+
+
+# ------------------ FILE UPLOAD ------------------
+
+uploaded_file = st.file_uploader(
+    "📤 Upload Image",
+    type=["png", "jpg", "jpeg"]
 )
 
-st.markdown("""
-<style>
-body {background-color:#0e1117;}
-h1,h2,h3,p {color:white;}
-</style>
-""", unsafe_allow_html=True)
+if uploaded_file is not None:
+    image = Image.open(uploaded_file)
+    st.image(image, caption="Uploaded Image", use_column_width=True)
 
-st.title("🧪 CBC Lab Report Analysis")
-st.caption("Upload CBC image → Extract all tests → Highlight abnormal values → Download PDF/CSV")
+    # -------- QR / BARCODE CHECK --------
+    qr_results = scan_qr_or_barcode(image)
 
-# ---------------- OCR ----------------
-@st.cache_resource
-def load_reader():
-    return easyocr.Reader(['en'], gpu=False)
+    if qr_results:
+        st.success("✅ QR / Barcode Detected")
+        for result in qr_results:
+            st.write("🔗 Data:", result)
 
-reader = load_reader()
-
-def ocr_image(image):
-    result = reader.readtext(np.array(image))
-    return " ".join([r[1] for r in result])
-
-# ---------------- TEST RANGES ----------------
-NORMAL_RANGES = {
-    "WBC": (4000, 11000),
-    "RBC": (4.5, 5.9),
-    "Hemoglobin": (13.5, 17.5),
-    "Hematocrit": (41, 53),
-    "MCV": (80, 100),
-    "MCH": (27, 32),
-    "MCHC": (32, 36),
-    "Platelets": (150000, 450000)
-}
-
-# ---------------- EXTRACTION ----------------
-def extract_tests(text):
-    rows = []
-    for test, (low, high) in NORMAL_RANGES.items():
-        pattern = rf"{test}[^0-9]*([0-9]+\.?[0-9]*)"
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            value = float(match.group(1))
-            status = "Normal"
-            if value < low:
-                status = "Low"
-            elif value > high:
-                status = "High"
-            rows.append([test, value, f"{low} - {high}", status])
-    return pd.DataFrame(rows, columns=["Test", "Value", "Normal Range", "Status"])
-
-# ---------------- FILE UPLOAD ----------------
-uploaded = st.file_uploader("Upload CBC Report Image (PNG/JPG)", type=["png","jpg","jpeg"])
-
-if uploaded:
-    image = Image.open(uploaded)
-    st.image(image, caption="Uploaded Report", width=400)
-
-    with st.spinner("Reading report..."):
-        text = ocr_image(image)
-
-    df = extract_tests(text)
-
-    if df.empty:
-        st.error("❌ No CBC values detected. Please upload a clearer image.")
     else:
-        st.subheader("📋 All Detected Test Results")
+        # -------- MEDICAL REPORT OCR --------
+        st.info("🔍 No QR found. Processing as Medical Report...")
 
-        def color_status(val):
-            if val == "High":
-                return "color:red;font-weight:bold;"
-            if val == "Low":
-                return "color:orange;font-weight:bold;"
-            return "color:lightgreen;font-weight:bold;"
+        extracted_text = extract_text_from_image(image)
 
-        st.dataframe(df.style.applymap(color_status, subset=["Status"]))
+        if extracted_text.strip() == "":
+            st.error("❌ No text detected. Try a clearer image.")
+        else:
+            df = extract_tests(extracted_text)
 
-        # ---------------- CSV DOWNLOAD ----------------
-        csv = df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "⬇ Download CSV",
-            csv,
-            "cbc_report.csv",
-            "text/csv"
-        )
+            if df.empty:
+                st.warning("⚠ No test values detected.")
+                st.text_area("Extracted Text", extracted_text, height=200)
+            else:
+                st.success("✅ Test Results Detected")
+                st.dataframe(df)
 
-        # ---------------- PDF DOWNLOAD ----------------
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("Arial", size=12)
-        pdf.cell(200, 10, "CBC Lab Report Analysis", ln=True)
+                # -------- CSV DOWNLOAD --------
+                csv = df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label="📥 Download CSV",
+                    data=csv,
+                    file_name="lab_report.csv",
+                    mime="text/csv"
+                )
 
-        for _, row in df.iterrows():
-            pdf.cell(
-                200, 8,
-                f"{row['Test']}: {row['Value']} ({row['Status']}) | Normal: {row['Normal Range']}",
-                ln=True
-            )
-
-        pdf_bytes = pdf.output(dest="S").encode("latin-1")
-
-        st.download_button(
-            "⬇ Download PDF",
-            pdf_bytes,
-            "cbc_report.pdf",
-            "application/pdf"
-        )
-
-st.markdown("---")
-st.caption("⚠ Educational use only. Always consult a medical professional.")
+else:
+    st.info("👆 Please upload an image to begin.")
